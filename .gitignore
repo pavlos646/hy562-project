@@ -1,7 +1,10 @@
 # sbt / Scala
 target/
-project/target/
-project/project/
+project/target/*
+project/project/*
+project/.boot/*
+project/.sbtboot/
+project/.ivy
 .bsp/
 .metals/
 .ammonite/
@@ -13,3 +16,5 @@ project/project/
 .settings/
 .DS_Store
 .factorypath
+.sbtopts
+
