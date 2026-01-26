@@ -16,7 +16,10 @@ lazy val root = (project in file("."))
       sparkMllib,                     // Spark MLlib
       "org.apache.spark" %% "spark-hive" % sparkVer,
       "org.neo4j.driver" % "neo4j-java-driver" % "4.4.10",
-      "org.neo4j" % "neo4j-connector-apache-spark_2.12" % "4.1.4", // Consider updating to 4.1.6
+     "org.neo4j" % "neo4j-connector-apache-spark_2.12" % "5.4.0_for_spark_3",
+
+
+     //"org.neo4j" % "neo4j-connector-apache-spark_2.12" % "4.1.4", // Consider updating to 4.1.6
       "org.scala-lang" % "scala-library" % scalaVer
     ),
 
