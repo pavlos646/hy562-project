@@ -17,5 +17,8 @@ project/.ivy
 .DS_Store
 .factorypath
 .sbtopts
-output/
 .vscode/
+output/*
+!output/.gitkeep
+data/*
+!data/.gitkeep
