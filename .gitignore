@@ -17,4 +17,5 @@ project/.ivy
 .DS_Store
 .factorypath
 .sbtopts
-
+output/
+.vscode/
