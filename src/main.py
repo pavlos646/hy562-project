@@ -2,24 +2,20 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, collect_set, size
 
 def main():
-    # Configuration
-    # Ensure this address is accessible from your docker/local environment
-    neo4j_url = "bolt://[0:0:0:0:0:0:0:0]:7687" 
+    neo4j_url = "bolt://[0:0:0:0:0:0:0:0]:7687"
     neo4j_user = "neo4j"
     neo4j_pass = "password"
 
-    # Initialize Spark Session
-    # Note: The connector package is injected via spark-submit in run.sh
     spark = SparkSession.builder \
         .appName("HY562-Step2-Neo4j-To-Baskets") \
         .master("local[*]") \
+        .config("spark.jars.packages", "org.neo4j:neo4j-connector-apache-spark_2.13:5.4.0_for_spark_3") \
         .getOrCreate()
 
     spark.sparkContext.setLogLevel("WARN")
 
     print(f"Connecting to {neo4j_url}...")
 
-    # Read relationships
     df = spark.read \
         .format("org.neo4j.spark.DataSource") \
         .option("url", neo4j_url) \
@@ -31,7 +27,6 @@ def main():
         .option("relationship.target.labels", ":Film") \
         .load()
 
-    # Logic
     baskets = df.groupBy(col("`target.title`").alias("film")) \
         .agg(collect_set(col("`source.name`")).alias("items")) \
         .filter(size(col("items")) > 1)
@@ -41,7 +36,6 @@ def main():
 
     print(f"Number of baskets: {baskets.count()}")
 
-    # Save to disk
     baskets.write.mode("overwrite").json("output/baskets_json")
 
     spark.stop()
