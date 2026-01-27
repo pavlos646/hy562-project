@@ -1,24 +1,7 @@
-# sbt / Scala
-target/
-project/target/*
-project/project/*
-project/.boot/*
-project/.sbtboot/
-project/.ivy
-.bsp/
-.metals/
-.ammonite/
-.bloop/
-.history/
 .idea/
-.classpath
-.project
-.settings/
-.DS_Store
-.factorypath
-.sbtopts
 .vscode/
 output/*
 !output/.gitkeep
 data/*
 !data/.gitkeep
+venv/
