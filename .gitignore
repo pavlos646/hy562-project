@@ -5,3 +5,5 @@ output/*
 data/*
 !data/.gitkeep
 venv/
+.env
+ideas.md
