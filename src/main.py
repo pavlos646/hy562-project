@@ -1,18 +1,23 @@
 import os
-import json
 from dotenv import load_dotenv
 from pyspark.ml.fpm import FPGrowth
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, collect_set, size
+from pyspark.sql.functions import col, explode
 
 spark = None
 neo4j_url = "bolt://[0:0:0:0:0:0:0:0]:7687"
 neo4j_user = "neo4j"
 neo4j_pass = "password"
 
+# TODO: Gemini AI API for text templating
 
 def get_supporting_subgraph(rules_df, limit=10):
-    node_list = [1,2,3]
+    df_ant = rules_df.select(explode(col("`antecedent`")).alias("node"))
+    df_con = rules_df.select(explode(col("`consequent`")).alias("node"))
+
+    distinct_nodes_df = df_ant.union(df_con).distinct()
+    node_list = list([int(row.node) for row in distinct_nodes_df.collect()])
+    print(f"NODE LIST: {node_list}")
 
     cypher_query = f"""
         MATCH p = (n)-[*1..2]-(m)
@@ -21,6 +26,9 @@ def get_supporting_subgraph(rules_df, limit=10):
         RETURN p
     """
     subgraph_df = execute_query(cypher_query)
+    subgraph_df.show(20, truncate=False)
+
+    # TODO: output the subgraph in a way maybe that neo4j understands it so we can do queries in the subgraph for personalization
 
     return subgraph_df
 
@@ -108,9 +116,8 @@ def main():
     # client = genai.Client()
 
     # response = client.models.generate_content(
-    #     # model="gemini-3-flash-preview",
-    #     model="gemini-2.0-flash", 
-    #     contents="Explain why the sky is blue."
+    #     model="gemini-2.5-flash-lite",
+    #     contents="Explain why Tzo is stupid."
     # )
     # print(response.text)
 
@@ -163,6 +170,8 @@ def main():
     model.freqItemsets.sort("freq").show(100)
     # print("Association rules:")
     model.associationRules.show(truncate=False)
+
+    get_supporting_subgraph(model.associationRules)
 
     # tmp = get_supporting_subgraph(model.associationRules)
     # tmp.show(truncate=False)
