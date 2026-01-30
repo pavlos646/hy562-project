@@ -14,6 +14,7 @@ node_labels=[]
 default_properties={}
 DATASET="star-wars"
 
+
 def get_supporting_subgraph(rules_df, limit=10):
     df_ant = rules_df.select(explode(col("`antecedent`")).alias("node"))
     df_con = rules_df.select(explode(col("`consequent`")).alias("node"))
@@ -22,13 +23,29 @@ def get_supporting_subgraph(rules_df, limit=10):
     node_list = list([int(row.node) for row in distinct_nodes_df.collect()])
     print(f"NODE LIST: {node_list}")
 
+    # 2. BUILD THE DYNAMIC CYPHER STRING
+    # We build a CASE statement: CASE WHEN 'Character' IN labels(node) THEN node.name ...
+    case_parts = []
+    for label, prop in default_properties.items():
+        # We use coalesce here just in case the expected property is missing on a specific node
+        case_parts.append(f"WHEN '{label}' IN labels(node) THEN coalesce(node.{prop}, 'Unknown')")
+    
+    # Build the ELSE clause (The Fallback)
+    # This creates: coalesce(node.name, node.title, node.label, ..., "Unknown")
+    fallback_props = [f"node.{p}" for p in node_labels]
+    else_part = f"ELSE coalesce({', '.join(fallback_props)}, toString(id(node)))" # Final fallback to internal ID
+    
+    # Combine into one string
+    node_display_logic = f"CASE {' '.join(case_parts)} {else_part} END"
+
     # MAYBE: use allShortestPaths
+    # 3. INSERT INTO QUERY
     cypher_query = f"""
         MATCH p = (n)-[*1..2]-(m)
         WHERE id(n) IN {node_list} 
             AND id(m) IN {node_list}
-        RETURN
-            [node IN nodes(p) | coalesce(node.name, node.title, "Unknown")] as path_nodes,
+        RETURN 
+            [node IN nodes(p) | {node_display_logic}] as path_nodes,
             [rel IN relationships(p) | type(rel)] as relationships
     """
     subgraph_df = execute_query(cypher_query)
@@ -249,7 +266,7 @@ def main():
     model.associationRules.show(truncate=False)
 
     subgraph = get_supporting_subgraph(model.associationRules)
-    # get_verbalization(subgraph, model.associationRules)
+    get_verbalization(subgraph, model.associationRules)
 
     spark.stop()
 
