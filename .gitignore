@@ -7,3 +7,4 @@ data/*
 venv/
 .env
 ideas.md
+__pycache__/
