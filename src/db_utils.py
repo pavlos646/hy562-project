@@ -1,11 +1,10 @@
 import csv
 
-DATASET="star-wars"
 
-def find_default_property(label):
+def find_default_property(dataset, label):
     property_list = ["name","title","label","id","uid","username","code"]
 
-    with open('./data/datasets/star-wars/star-wars_node_types.csv') as csv_file:
+    with open(f'./data/datasets/{dataset}/{dataset}_node_types.csv') as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for row in csv_reader:
             if row[0] == label:
@@ -19,18 +18,19 @@ def find_default_property(label):
         print(f"Label '{label}' is not part of the PG")
         return None
 
-def get_node_properties():
+def get_node_properties(dataset):
+
     node_labels = []
     default_properties = {}
 
     # Find node labels and their default property
-    with open(f'./data/datasets/{DATASET}/node_labels.csv') as csv_file:
+    with open(f'./data/datasets/{dataset}/node_labels.csv') as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         for row in csv_reader:
             if str(row[0]) == "label": continue
             node_labels.append(str(row[0]))
     
     for x in node_labels:
-        default_properties[x] = find_default_property(x)
+        default_properties[x] = find_default_property(dataset, label=x)
 
     return node_labels, default_properties

@@ -1,25 +1,24 @@
-import os
 from dotenv import load_dotenv
 from pyspark.ml.fpm import FPGrowth
 from pyspark.sql.functions import col, explode
 
-import db_utils
-import spark_utils
+from db_utils import *
+from spark_utils import *
 
 spark = None
-
 node_labels=[]
+DATASET="star-wars"
 default_properties={}
 
 
-def property_id_to_name(rules_df):
-    df_ant = rules_df.select(explode(col("`antecedent`")).alias("node"))
-    df_con = rules_df.select(explode(col("`consequent`")).alias("node"))
+def get_node_list(df):
+    df_ant = df.select(explode(col("`antecedent`")).alias("node"))
+    df_con = df.select(explode(col("`consequent`")).alias("node"))
 
     distinct_nodes_df = df_ant.union(df_con).distinct()
-    node_list = list([int(row.node) for row in distinct_nodes_df.collect()])
-    print(f"NODE LIST: {node_list}")
+    return list([int(row.node) for row in distinct_nodes_df.collect()])
 
+def property_id_to_name(node_list):
     # Build a dynamic Cypher CASE statement based on your dictionary
     # output example: WHEN 'Character' IN labels(n) THEN n.name
     case_statements = []
@@ -33,18 +32,11 @@ def property_id_to_name(rules_df):
            CASE {' '.join(case_statements)} ELSE 'Unknown' END as display_name
     """
 
-    result = spark_utils.execute_query(spark, query)
+    result = execute_query(spark, query)
     return {row["id"]: row["display_name"] for row in result.collect()}
 
 
-def get_supporting_subgraph(rules_df, limit=10):
-    df_ant = rules_df.select(explode(col("`antecedent`")).alias("node"))
-    df_con = rules_df.select(explode(col("`consequent`")).alias("node"))
-
-    distinct_nodes_df = df_ant.union(df_con).distinct()
-    node_list = list([int(row.node) for row in distinct_nodes_df.collect()])
-    print(f"NODE LIST: {node_list}")
-
+def get_supporting_subgraph(node_list, limit=10):
     # 2. BUILD THE DYNAMIC CYPHER STRING
     # We build a CASE statement: CASE WHEN 'Character' IN labels(node) THEN node.name ...
     case_parts = []
@@ -70,7 +62,7 @@ def get_supporting_subgraph(rules_df, limit=10):
             [node IN nodes(p) | {node_display_logic}] as path_nodes,
             [rel IN relationships(p) | type(rel)] as relationships
     """
-    subgraph_df = spark_utils.execute_query(spark, cypher_query)
+    subgraph_df = execute_query(spark, cypher_query)
     subgraph_df.show(truncate=False)
 
     # TODO: output the subgraph in a way maybe that neo4j understands it so we can do queries in the subgraph for personalization
@@ -78,8 +70,7 @@ def get_supporting_subgraph(rules_df, limit=10):
     return subgraph_df
 
 
-def get_verbalization(subgraph=None, association_rules=None):
-    import json
+def get_verbalization(subgraph, association_rules, id_mapping):
     from google import genai
 
     # TODO: Map IDs back to names/labels/titles
@@ -89,32 +80,23 @@ def get_verbalization(subgraph=None, association_rules=None):
     # Spark DataFrames are lazy. We must .collect() data to Python to send it to the API.
     # We use .limit(50) to ensure we don't blow up the prompt token limit.
     
+
     # Format Rules: Convert to a nice string (e.g., Markdown or JSON)
-    rules_data = []
     rules_text = ""
-    if association_rules:
-        # Get top 20 rules by confidence or lift
-        rows = association_rules.sort(col("lift").desc()).limit(50).collect()
-        for row in rows:
-            rules_text += f"({row.antecedent}) --> ({row.consequent}), {row.confidence}, {row.lift}, {row.support}\n"
-            # rules_data.append({
-            #     "antecedent": row.antecedent,
-            #     "consequent": row.consequent,
-            #     "confidence": round(row.confidence, 3),
-            #     "lift": round(row.lift, 3)
-            # })s
-    # rules_text = json.dumps(rules_data, indent=2)
+    # Get top 50 rules by confidence or lift
+    rows = association_rules.sort(col("lift").desc()).limit(50).collect()
+    for row in rows:
+        antec = [str(id_mapping[int(id)]) for id in row.antecedent]
+        conseq = [str(id_mapping[int(id)]) for id in row.consequent]
+        rules_text += f"{antec} --> {conseq}, {row.confidence}, {row.lift}, {row.support}\n"
+
 
     # Format Subgraph: Extract nodes/relationships
-    subgraph_text = "No subgraph data provided."
-    if subgraph:
-        # Assuming subgraph has 'p' (paths) or distinct nodes/rels
-        # It's safer to just describe the nodes found in the subgraph
-        # (Converting a whole graph to text is heavy, so we summarize)
-        elements = subgraph.limit(50).collect()
-        subgraph_text = str([str(row) for row in elements])
-
-    # (antecendts, ) --> (consq.. ) , confidence, lift
+    # Assuming subgraph has 'p' (paths) or distinct nodes/rels
+    # It's safer to just describe the nodes found in the subgraph
+    # (Converting a whole graph to text is heavy, so we summarize)
+    elements = subgraph.limit(50).collect()
+    subgraph_text = str([str(row) for row in elements])
 
     print("---------------------------------------------")
     print(f"RULES_TEXT: \n{rules_text}")
@@ -143,12 +125,7 @@ def find_minSupport_and_minConfidence(itemsets, node_count):
     for _ in range(10):
         fp = FPGrowth(itemsCol="items", minSupport=currMinSupport, minConfidence=currMinConfidence)
         model = fp.fit(itemsets)
-
-        df_ant = model.associationRules.select(explode(col("`antecedent`")).alias("node"))
-        df_con = model.associationRules.select(explode(col("`consequent`")).alias("node"))
-
-        distinct_nodes_df = df_ant.union(df_con).distinct()
-        node_list = list([int(row.node) for row in distinct_nodes_df.collect()])
+        node_list = get_node_list(model.associationRules)
 
         # check if association rules consist at least 2% of all the nodes
         if(len(node_list) >= 0.02 * node_count): break
@@ -166,23 +143,13 @@ def main():
     global spark, node_labels, default_properties
 
     load_dotenv()
-    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 
-    spark = spark_utils.init_spark()
-    node_labels, default_properties = db_utils.get_node_properties()
+    spark = init_spark()
+    node_labels, default_properties = get_node_properties(DATASET)
 
-    # DELETE:
-    cypher_query = """
-        MATCH (n)-[r]-()
-        RETURN id(n) AS node_id, count(r) AS freq
-        ORDER BY freq DESC
-    """
-    df = spark_utils.execute_query(spark, cypher_query)
-    df.show(20, truncate=False)
-    print(f"ITEM COUNT: {df.distinct().count()}")
-    node_count = df.distinct().count()
+    node_count = execute_query(spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
 
-    # TODO: find a better way to get the count of all nodes (this is needed later)
+
 
 
     # MAYBE: add WHERE id(s) < id(t) to avoid having both [A, B] and [B, A]
@@ -193,31 +160,25 @@ def main():
         RETURN neighbors + toString(id(s)) AS items
     """
     
-    df = spark_utils.execute_query(spark, cypher_query)
+    df = execute_query(spark, cypher_query)
     
     # Optional: Cache the DF because FPGrowth reads it multiple times
     df.cache()
-
-    # DELETE:
-    total_count = df.count()
-    print(f"Total Transactions: {total_count}")
     
     minS, minC = find_minSupport_and_minConfidence(df, node_count)
-    
     fp = FPGrowth(itemsCol="items", minSupport=minS, minConfidence=minC)
     model = fp.fit(df)
 
     print("Frequent itemsets (Sorted by least frequent):")
-    # 3. Sorting by "freq" (default is ascending) shows the rare items first
     model.freqItemsets.sort("freq").show(100)
-    # print("Association rules:")
     model.associationRules.show(truncate=False)
 
-    subgraph = get_supporting_subgraph(model.associationRules)
-    get_verbalization(subgraph, model.associationRules)
-
-    id_mappings = property_id_to_name(model.associationRules)
+    node_list = get_node_list(model.associationRules)
+    subgraph = get_supporting_subgraph(node_list)
+    id_mappings = property_id_to_name(node_list)
     print(id_mappings)
+    # UNCOMMENT:
+    get_verbalization(subgraph, model.associationRules, id_mappings)
 
     spark.stop()
 
