@@ -1,6 +1,8 @@
+import json
 from dotenv import load_dotenv
 from pyspark.ml.fpm import FPGrowth
 from pyspark.sql.functions import col, explode
+from enum import Enum
 
 from db_utils import *
 from spark_utils import *
@@ -10,6 +12,11 @@ node_labels=[]
 DATASET="star-wars"
 default_properties={}
 
+class Mode(Enum):
+    STRICT = 1
+    LOOSE = 2
+    ASSOCIATION = 3
+
 
 def get_node_list(df):
     df_ant = df.select(explode(col("`antecedent`")).alias("node"))
@@ -17,6 +24,7 @@ def get_node_list(df):
 
     distinct_nodes_df = df_ant.union(df_con).distinct()
     return list([int(row.node) for row in distinct_nodes_df.collect()])
+
 
 def property_id_to_name(node_list):
     # Build a dynamic Cypher CASE statement based on your dictionary
@@ -106,10 +114,40 @@ def get_verbalization(subgraph, association_rules, id_mapping):
 
     response = client.models.generate_content(
         model="gemini-2.5-flash-lite",
-        contents=f"""Based on these association rules: {rules_text} and this
-                produced subgraph: {subgraph_text}, can you do a simple analysis of the results ?
-                Please stick to the data provided to you and do not give general examples.
-            """
+        contents=f"""
+            You are an AI system tasked with verbalizing data mining results.
+            You are given:
+            
+            1) ASSOCIATION RULES extracted from transaction data.
+            These rules represent STATISTICAL relationship and are in this format:
+            [antecedent] --> [consequent], condifence, lift, support
+            Association Rules:
+            {rules_text}
+            
+            2) A SUPPORTING SUBGRAPH extracted from a Property Graph.
+            The subgraph provides STRUCTURAL and SEMANTIC context only.
+            It does NOT encode frequency, confidence, or support values.
+            Supporting Subgraph:
+            {subgraph_text}
+            
+            TASK:
+            Write a concise verbalization that:
+            - Clearly states the statistical association described by the rules.
+            - Uses the subgraph ONLY as contextual or semantic evidence.
+            - Explains *why the association is plausible* based on graph structure.
+            - Does NOT claim that the subgraph explains numerical values.
+            - Does NOT introduce entities or relationships not present in the data.
+            - Describe the relationship between the nodes of the graph and how strong they are.
+
+            STYLE GUIDELINES:
+            - Be precise and factual.
+            - Avoid generic explanations or examples.
+            - Do not speculate beyond the provided data.
+            - Write in clear, academic-style English (2-4 paragraphs max).
+
+            OUTPUT:
+            A short explanatory text suitable for inclusion in a technical report.
+        """
     )
 
     with open("output/verbalization.md", "a") as f:
@@ -137,6 +175,54 @@ def find_minSupport_and_minConfidence(itemsets, node_count):
     print(f"MIN_SUPPORT: {currMinSupport}")
     print(f"MIN_CONFIDENCE: {currMinConfidence}")
     return currMinSupport, currMinConfidence
+
+
+def load_user_interests():
+    data = {}
+    with open('./data/user.json', 'r') as file:
+        data = json.load(file)
+    return data
+
+
+def filter_graph_based_on_user(node_list, mode:Mode = Mode.LOOSE):
+    interests = load_user_interests()
+
+    query = ""
+    conditions = []
+    for label, names in interests.items():
+        # Determine if we should look for 'name' or 'title' 
+        # (You can use your default_properties dict here)
+        prop = default_properties[label]
+        
+        # Format the list for Cypher: ["A", "B"]
+        formatted_names = str(names)
+        conditions.append(f"(n:{label} AND n.{prop} IN {formatted_names})")
+
+    where_clause = "\nOR ".join(conditions)
+
+    if mode in [Mode.STRICT, Mode.LOOSE]:
+        query = f"""
+            MATCH p = (n)-[*..{mode.value}]-()
+            WHERE {where_clause}
+            RETURN p
+        """
+    elif mode == Mode.ASSOCIATION:
+        # TODO: choose whether to connect between (interested,associated nodes) and (interested, associated nodes) 
+        # or just between (interested nodes) and (interested, associated nodes)
+        query = f"""
+            MATCH (n)
+            WHERE {where_clause}
+            OR id(n) IN {node_list}
+            WITH n
+            MATCH p = (n)-[*..2]-(m)
+            WHERE {where_clause.replace('n:', 'm:').replace('n.', 'm.')}
+            OR id(m) IN {node_list}
+            RETURN p
+        """
+
+    print(query)
+    df = execute_query(spark, query)
+    df.show(truncate=False)
 
 
 def main():
@@ -178,7 +264,12 @@ def main():
     id_mappings = property_id_to_name(node_list)
     print(id_mappings)
     # UNCOMMENT:
-    get_verbalization(subgraph, model.associationRules, id_mappings)
+    # get_verbalization(subgraph, model.associationRules, id_mappings)
+
+    filter_graph_based_on_user(node_list)
+    filter_graph_based_on_user(node_list, Mode.STRICT)
+    filter_graph_based_on_user(node_list, Mode.ASSOCIATION)
+    
 
     spark.stop()
 
