@@ -1,6 +1,7 @@
 numpy==2.4.1
 dotenv==0.9.9
 pyspark==3.4.1
+streamlit==1.53.1
 scikit-learn==1.8.0
 setuptools==80.10.2
 google-genai==1.60.0

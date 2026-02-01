@@ -1,14 +1,15 @@
 import json
+from enum import Enum
 from dotenv import load_dotenv
 from pyspark.ml.fpm import FPGrowth
 from pyspark.sql.functions import col, explode
-from enum import Enum
 
 from db_utils import *
 from spark_utils import *
 
-spark = None
+# spark = None
 node_labels=[]
+node_count = 0
 DATASET="star-wars"
 default_properties={}
 
@@ -26,7 +27,7 @@ def get_node_list(df):
     return list([int(row.node) for row in distinct_nodes_df.collect()])
 
 
-def property_id_to_name(node_list):
+def property_id_to_name(spark, node_list):
     # Build a dynamic Cypher CASE statement based on your dictionary
     # output example: WHEN 'Character' IN labels(n) THEN n.name
     case_statements = []
@@ -44,7 +45,7 @@ def property_id_to_name(node_list):
     return {row["id"]: row["display_name"] for row in result.collect()}
 
 
-def get_supporting_subgraph(node_list, limit=10):
+def get_supporting_subgraph(spark, node_list, limit=10):
     # 2. BUILD THE DYNAMIC CYPHER STRING
     # We build a CASE statement: CASE WHEN 'Character' IN labels(node) THEN node.name ...
     case_parts = []
@@ -184,7 +185,8 @@ def load_user_interests():
     return data
 
 
-def filter_graph_based_on_user(node_list, mode:Mode = Mode.LOOSE):
+# node_list is only used for Mode.ASSOCIATION
+def filter_graph_based_on_user(spark, node_list, mode:Mode = Mode.LOOSE):
     interests = load_user_interests()
 
     query = ""
@@ -225,19 +227,7 @@ def filter_graph_based_on_user(node_list, mode:Mode = Mode.LOOSE):
     df.show(truncate=False)
 
 
-def main():
-    global spark, node_labels, default_properties
-
-    load_dotenv()
-
-    spark = init_spark()
-    node_labels, default_properties = get_node_properties(DATASET)
-
-    node_count = execute_query(spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
-
-
-
-
+def general_summarization(spark):
     # MAYBE: add WHERE id(s) < id(t) to avoid having both [A, B] and [B, A]
     cypher_query = """
         MATCH (s)--(t)
@@ -263,15 +253,23 @@ def main():
     subgraph = get_supporting_subgraph(node_list)
     id_mappings = property_id_to_name(node_list)
     print(id_mappings)
-    # UNCOMMENT:
-    # get_verbalization(subgraph, model.associationRules, id_mappings)
 
-    filter_graph_based_on_user(node_list)
-    filter_graph_based_on_user(node_list, Mode.STRICT)
-    filter_graph_based_on_user(node_list, Mode.ASSOCIATION)
+    return node_list, id_mappings, subgraph
+
+
+# def init():
+#     node_labels, default_properties = get_node_properties(DATASET)
+#     node_count = execute_query(spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
+
+#     # UNCOMMENT:
+#     # get_verbalization(subgraph, model.associationRules, id_mappings)
+#     # filter_graph_based_on_user(node_list)
+#     # filter_graph_based_on_user(node_list, Mode.STRICT)
+#     # filter_graph_based_on_user(node_list, Mode.ASSOCIATION)
+#     # spark.stop()
     
+#     return spark, node_labels, default_properties, node_count
 
-    spark.stop()
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
