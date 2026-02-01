@@ -26,8 +26,8 @@ class Neo4jManager:
     def __init__(self, neo4j_home, dataset_home):
         self.neo4j_home = Path(neo4j_home).absolute()
         self.dataset_home = Path(dataset_home).absolute()
-        self.bin = os.path.join(neo4j_home, "bin", "neo4j")
-        self.admin = os.path.join(neo4j_home, "bin", "neo4j-admin")
+        self.bin = os.path.join(self.neo4j_home, "bin", "neo4j")
+        self.admin = os.path.join(self.neo4j_home, "bin", "neo4j-admin")
 
     def load(self, dataset):
         self.stop()

@@ -1,6 +1,5 @@
 import json
 from enum import Enum
-from dotenv import load_dotenv
 from pyspark.ml.fpm import FPGrowth
 from pyspark.sql.functions import col, explode
 
@@ -8,15 +7,63 @@ from db_utils import *
 from spark_utils import *
 
 # spark = None
-node_labels=[]
-node_count = 0
-DATASET="star-wars"
-default_properties={}
+# node_labels=[]
+# node_count = 0
+# DATASET="star-wars"
+# default_properties={}
 
 class Mode(Enum):
     STRICT = 1
     LOOSE = 2
     ASSOCIATION = 3
+
+
+class SummarizationManager:
+    def __init__(self, spark):
+        self.spark = spark
+        self.dataset = None
+        self.node_list = None        
+        self.node_labels = None
+        self.default_properties = None
+
+    def load(self, dataset):
+        self.dataset = dataset
+        self.node_labels, self.default_properties = self.__set_node_properties()
+
+    def set_node_list(self, node_list): self.node_list = node_list
+
+    def __find_default_property(self, label):
+        property_list = ["name","title","label","id","uid","username","code"]
+
+        with open(f'./data/datasets/{self.dataset}/{self.dataset}_node_types.csv') as csv_file:
+            csv_reader = csv.reader(csv_file, delimiter=',')
+            for row in csv_reader:
+                if row[0] == label:
+                    clean_list = [item.strip() for item in row[1].replace("[", "").replace("]", "").split(",")]
+                    for property in property_list:
+                        if property in clean_list: return property
+
+                    # TODO: Maybe select at random, for now just return the first property
+                    return clean_list[0]
+
+            print(f"Label '{label}' is not part of the PG")
+            return None
+
+    def __set_node_properties(self):
+        node_labels = []
+        default_properties = {}
+
+        # Find node labels and their default property
+        with open(f'./data/datasets/{self.dataset}/node_labels.csv') as csv_file:
+            csv_reader = csv.reader(csv_file, delimiter=',')
+            for row in csv_reader:
+                if str(row[0]) == "label": continue
+                node_labels.append(str(row[0]))
+        
+        for x in node_labels:
+            default_properties[x] = find_default_property(self.dataset, label=x)
+
+        return node_labels, default_properties
 
 
 def get_node_list(df):
@@ -27,35 +74,35 @@ def get_node_list(df):
     return list([int(row.node) for row in distinct_nodes_df.collect()])
 
 
-def property_id_to_name(spark, node_list):
+def property_id_to_name(sm: SummarizationManager):
     # Build a dynamic Cypher CASE statement based on your dictionary
     # output example: WHEN 'Character' IN labels(n) THEN n.name
     case_statements = []
-    for label, prop in default_properties.items():
+    for label, prop in sm.default_properties.items():
         case_statements.append(f"WHEN '{label}' IN labels(n) THEN n.{prop}")
     
     query = f"""
     MATCH (n)
-    WHERE id(n) IN {node_list}
+    WHERE id(n) IN {sm.node_list}
     RETURN id(n) as id,
            CASE {' '.join(case_statements)} ELSE 'Unknown' END as display_name
     """
 
-    result = execute_query(spark, query)
+    result = execute_query(sm.spark, query)
     return {row["id"]: row["display_name"] for row in result.collect()}
 
 
-def get_supporting_subgraph(spark, node_list, limit=10):
+def get_supporting_subgraph(sm: SummarizationManager, limit=10):
     # 2. BUILD THE DYNAMIC CYPHER STRING
     # We build a CASE statement: CASE WHEN 'Character' IN labels(node) THEN node.name ...
     case_parts = []
-    for label, prop in default_properties.items():
+    for label, prop in sm.default_properties.items():
         # We use coalesce here just in case the expected property is missing on a specific node
         case_parts.append(f"WHEN '{label}' IN labels(node) THEN coalesce(node.{prop}, 'Unknown')")
     
     # Build the ELSE clause (The Fallback)
     # This creates: coalesce(node.name, node.title, node.label, ..., "Unknown")
-    fallback_props = [f"node.{p}" for p in node_labels]
+    fallback_props = [f"node.{p}" for p in sm.node_labels]
     else_part = f"ELSE coalesce({', '.join(fallback_props)}, toString(id(node)))" # Final fallback to internal ID
     
     # Combine into one string
@@ -65,13 +112,13 @@ def get_supporting_subgraph(spark, node_list, limit=10):
     # 3. INSERT INTO QUERY
     cypher_query = f"""
         MATCH p = (n)-[*1..2]-(m)
-        WHERE id(n) IN {node_list} 
-            AND id(m) IN {node_list}
+        WHERE id(n) IN {sm.node_list} 
+            AND id(m) IN {sm.node_list}
         RETURN 
             [node IN nodes(p) | {node_display_logic}] as path_nodes,
             [rel IN relationships(p) | type(rel)] as relationships
     """
-    subgraph_df = execute_query(spark, cypher_query)
+    subgraph_df = execute_query(sm.spark, cypher_query)
     subgraph_df.show(truncate=False)
 
     # TODO: output the subgraph in a way maybe that neo4j understands it so we can do queries in the subgraph for personalization
@@ -186,7 +233,7 @@ def load_user_interests():
 
 
 # node_list is only used for Mode.ASSOCIATION
-def filter_graph_based_on_user(spark, node_list, mode:Mode = Mode.LOOSE):
+def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
     interests = load_user_interests()
 
     query = ""
@@ -194,7 +241,7 @@ def filter_graph_based_on_user(spark, node_list, mode:Mode = Mode.LOOSE):
     for label, names in interests.items():
         # Determine if we should look for 'name' or 'title' 
         # (You can use your default_properties dict here)
-        prop = default_properties[label]
+        prop = sm.default_properties[label]
         
         # Format the list for Cypher: ["A", "B"]
         formatted_names = str(names)
@@ -214,20 +261,20 @@ def filter_graph_based_on_user(spark, node_list, mode:Mode = Mode.LOOSE):
         query = f"""
             MATCH (n)
             WHERE {where_clause}
-            OR id(n) IN {node_list}
+            OR id(n) IN {sm.node_list}
             WITH n
             MATCH p = (n)-[*..2]-(m)
             WHERE {where_clause.replace('n:', 'm:').replace('n.', 'm.')}
-            OR id(m) IN {node_list}
+            OR id(m) IN {sm.node_list}
             RETURN p
         """
 
     print(query)
-    df = execute_query(spark, query)
+    df = execute_query(sm.spark, query)
     df.show(truncate=False)
 
 
-def general_summarization(spark):
+def general_summarization(sm: SummarizationManager, node_count):
     # MAYBE: add WHERE id(s) < id(t) to avoid having both [A, B] and [B, A]
     cypher_query = """
         MATCH (s)--(t)
@@ -236,7 +283,7 @@ def general_summarization(spark):
         RETURN neighbors + toString(id(s)) AS items
     """
     
-    df = execute_query(spark, cypher_query)
+    df = execute_query(sm.spark, cypher_query)
     
     # Optional: Cache the DF because FPGrowth reads it multiple times
     df.cache()
