@@ -1,16 +1,8 @@
 import json
 from enum import Enum
-from pyspark.ml.fpm import FPGrowth
-from pyspark.sql.functions import col, explode
-
 from db_utils import *
 from spark_utils import *
 
-# spark = None
-# node_labels=[]
-# node_count = 0
-# DATASET="star-wars"
-# default_properties={}
 
 class Mode(Enum):
     STRICT = 1
@@ -22,11 +14,10 @@ class SummarizationManager:
     def __init__(self, spark):
         self.spark = spark
         self.dataset = None
-        self.node_list = None
         self.node_count = None
         self.subgraph = None
         self.id_mappings = None
-        self.assocation_rules = None
+        self.association_rules = None
         self.node_labels = None
         self.default_properties = None
 
@@ -35,7 +26,9 @@ class SummarizationManager:
         self.node_count = self.__set_node_count()
         self.node_labels, self.default_properties = self.__set_node_properties()
 
-    def set_node_list(self, node_list): self.node_list = node_list
+    def to_node_list(self):
+        return [int(i) for i in list(self.id_mappings.keys())]
+
     def set_subgraph(self, subgraph): self.subgraph = subgraph
     def set_id_mappings(self, id_mappings): self.id_mappings = id_mappings
     def set_association_rules(self, association_rules): self.association_rules = association_rules
@@ -69,7 +62,7 @@ class SummarizationManager:
                 node_labels.append(str(row[0]))
         
         for x in node_labels:
-            default_properties[x] = find_default_property(self.dataset, label=x)
+            default_properties[x] = self.__find_default_property(label=x)
 
         return node_labels, default_properties
     
@@ -77,15 +70,7 @@ class SummarizationManager:
         return execute_query(self.spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
 
 
-def get_node_list(df):
-    df_ant = df.select(explode(col("`antecedent`")).alias("node"))
-    df_con = df.select(explode(col("`consequent`")).alias("node"))
-
-    distinct_nodes_df = df_ant.union(df_con).distinct()
-    return list([int(row.node) for row in distinct_nodes_df.collect()])
-
-
-def property_id_to_name(sm: SummarizationManager):
+def property_id_to_name(sm: SummarizationManager, node_list):
     # Build a dynamic Cypher CASE statement based on your dictionary
     # output example: WHEN 'Character' IN labels(n) THEN n.name
     case_statements = []
@@ -94,7 +79,7 @@ def property_id_to_name(sm: SummarizationManager):
     
     query = f"""
     MATCH (n)
-    WHERE id(n) IN {sm.node_list}
+    WHERE id(n) IN {node_list}
     RETURN id(n) as id,
            CASE {' '.join(case_statements)} ELSE 'Unknown' END as display_name
     """
@@ -123,8 +108,8 @@ def get_supporting_subgraph(sm: SummarizationManager, limit=10):
     # 3. INSERT INTO QUERY
     cypher_query = f"""
         MATCH p = (n)-[*1..2]-(m)
-        WHERE id(n) IN {sm.node_list} 
-            AND id(m) IN {sm.node_list}
+        WHERE id(n) IN {sm.to_node_list()} 
+            AND id(m) IN {sm.to_node_list()}
         RETURN 
             [node IN nodes(p) | {node_display_logic}] as path_nodes,
             [rel IN relationships(p) | type(rel)] as relationships
@@ -140,21 +125,15 @@ def get_supporting_subgraph(sm: SummarizationManager, limit=10):
 def get_verbalization(sm: SummarizationManager):
     from google import genai
 
-    # TODO: Map IDs back to names/labels/titles
     client = genai.Client()
-
-    # 1. PREPARE THE DATA
-    # Spark DataFrames are lazy. We must .collect() data to Python to send it to the API.
-    # We use .limit(50) to ensure we don't blow up the prompt token limit.
-    
 
     # Format Rules: Convert to a nice string (e.g., Markdown or JSON)
     rules_text = ""
     # Get top 50 rules by confidence or lift
     rows = sm.association_rules.sort(col("lift").desc()).limit(50).collect()
     for row in rows:
-        antec = [str(sm.id_mappings[int(id)]) for id in row.antecedent]
-        conseq = [str(sm.id_mappings[int(id)]) for id in row.consequent]
+        antec = [str(id) for id in row.antecedent]
+        conseq = [str(id) for id in row.consequent]
         rules_text += f"{antec} --> {conseq}, {row.confidence}, {row.lift}, {row.support}\n"
 
 
@@ -165,12 +144,6 @@ def get_verbalization(sm: SummarizationManager):
     elements = sm.subgraph.limit(50).collect()
     subgraph_text = str([str(row) for row in elements])
 
-    print("---------------------------------------------")
-    print(f"RULES_TEXT: \n{rules_text}")
-    print("---------------------------------------------")
-    print(f"SUBGRAPH_TEXT: \n{subgraph_text}")
-    print("---------------------------------------------")
-
     response = client.models.generate_content(
         model="gemini-2.5-flash-lite",
         contents=f"""
@@ -179,11 +152,17 @@ def get_verbalization(sm: SummarizationManager):
             
             1) ASSOCIATION RULES extracted from transaction data.
             These rules represent STATISTICAL relationship and are in this format:
-            [antecedent] --> [consequent], condifence, lift, support
+            [antecedent] --> [consequent], confidence, lift, support
             Association Rules:
             {rules_text}
             
-            2) A SUPPORTING SUBGRAPH extracted from a Property Graph.
+            2) PROPERTIES OF ASSOCIATION RULES are mapped based on the IDs and
+            consist of all the properties of the nodes in the ASSOCIATION RULES.
+            They also include the "default_property" which is the property by which we can
+            differentiate each node, other than the ID.
+            {sm.id_mappings}
+
+            3) A SUPPORTING SUBGRAPH extracted from a Property Graph.
             The subgraph provides STRUCTURAL and SEMANTIC context only.
             It does NOT encode frequency, confidence, or support values.
             Supporting Subgraph:
@@ -203,39 +182,14 @@ def get_verbalization(sm: SummarizationManager):
             - Avoid generic explanations or examples.
             - Do not speculate beyond the provided data.
             - Write in clear, academic-style English (2-4 paragraphs max).
+            - Do not use the IDs in your answer just the properties and default properties.
 
             OUTPUT:
             A short explanatory text suitable for inclusion in a technical report.
         """
     )
 
-    # with open("output/verbalization.md", "a") as f:
-    #   f.write(f"\n\n---------------------------------\n{response.text}")
-
-    # print("Finished verbalization")
-
     return response.text
-
-
-def find_minSupport_and_minConfidence(itemsets, node_count):
-    currMinSupport = 0.1
-    currMinConfidence = 0.5
-
-    for _ in range(10):
-        fp = FPGrowth(itemsCol="items", minSupport=currMinSupport, minConfidence=currMinConfidence)
-        model = fp.fit(itemsets)
-        node_list = get_node_list(model.associationRules)
-
-        # check if association rules consist at least 2% of all the nodes
-        if(len(node_list) >= 0.02 * node_count): break
-
-        currMinSupport = currMinSupport / 1.5
-        # MAYBE: do not decrease confidence, or do by very little every second iteration
-        # currMinConfidence = currMinConfidence / 1.5
-
-    print(f"MIN_SUPPORT: {currMinSupport}")
-    print(f"MIN_CONFIDENCE: {currMinConfidence}")
-    return currMinSupport, currMinConfidence
 
 
 def load_user_interests():
@@ -276,11 +230,11 @@ def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
         query = f"""
             MATCH (n)
             WHERE {where_clause}
-            OR id(n) IN {sm.node_list}
+            OR id(n) IN {sm.to_node_list()}
             WITH n
             MATCH p = (n)-[*..2]-(m)
             WHERE {where_clause.replace('n:', 'm:').replace('n.', 'm.')}
-            OR id(m) IN {sm.node_list}
+            OR id(m) IN {sm.to_node_list()}
             RETURN p
         """
 
@@ -316,7 +270,38 @@ def association(sm: SummarizationManager):
     model.associationRules.show(truncate=False)
 
     node_list = get_node_list(model.associationRules)
-    sm.set_node_list(node_list)
+    id_mappings = property_id_to_name(sm, node_list)
+    sm.set_id_mappings(id_mappings)
+
+
+    # Assuming sm.node_list is your list of IDs
+    cypher_query = f"""
+        MATCH (n)
+        WHERE id(n) IN {node_list}
+        RETURN 
+            id(n) AS node_id,
+            properties(n) AS all_props
+    """
+    nodes_df = execute_query(sm.spark, cypher_query)
+    # Collect to driver as a list of Rows
+    rows = nodes_df.collect()
+
+    final_output = {}
+
+    for row in rows:
+        n_id = row['node_id']
+        raw_props = row['all_props']
+        
+        # Filter out "Unknown" values from the properties dictionary
+        clean_props = {k: v for k, v in raw_props.items() if str(v).lower() != 'unknown'}
+        
+        # Construct the nested structure
+        final_output[n_id] = {
+            "default_property": id_mappings.get(n_id, "Unknown"),
+            "properties": clean_props
+        }
+
+    sm.set_id_mappings(final_output)
     sm.set_association_rules(model.associationRules)
 
 
@@ -324,26 +309,6 @@ def general_summarization(sm: SummarizationManager):
     association(sm)
 
     subgraph = get_supporting_subgraph(sm)
-    id_mappings = property_id_to_name(sm)
-
     sm.set_subgraph(subgraph)
-    sm.set_id_mappings(id_mappings)
 
     return True
-
-# def init():
-#     node_labels, default_properties = get_node_properties(DATASET)
-#     node_count = execute_query(spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
-
-#     # UNCOMMENT:
-#     # get_verbalization(subgraph, model.associationRules, id_mappings)
-#     # filter_graph_based_on_user(node_list)
-#     # filter_graph_based_on_user(node_list, Mode.STRICT)
-#     # filter_graph_based_on_user(node_list, Mode.ASSOCIATION)
-#     # spark.stop()
-    
-#     return spark, node_labels, default_properties, node_count
-
-
-# if __name__ == "__main__":
-#     main()

@@ -4,10 +4,11 @@ from time import sleep
 from pathlib import Path
 from neo4j import GraphDatabase
 
+
 URI = "bolt://[0:0:0:0:0:0:0:0]:7687"
 AUTH = ("neo4j", "password")
 MAX_RETRIES = 5
-RETRY_DELAY = 5  # seconds
+RETRY_DELAY = 5
 
 
 def find_dump_path(dataset_folder_path):
@@ -27,6 +28,7 @@ def find_dump_path(dataset_folder_path):
     
     # Return the absolute path as a string
     return str(dump_files[-1].absolute())
+
 
 def wait_for_neo4j():
     for attempt in range(1, MAX_RETRIES + 1):
@@ -75,11 +77,3 @@ class Neo4jManager:
     def stop(self):
         print("🛑 Stopping Neo4j...")
         subprocess.run([self.bin, "stop"], check=True)
-
-def main():
-    manager = Neo4jManager(neo4j_home="../neo4j-community-4.4.46", dataset_home="./data/datasets/")
-    manager.load("star-wars")
-    manager.start()
-
-if __name__ == "__main__":
-    main()

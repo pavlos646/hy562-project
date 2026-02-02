@@ -1,36 +1,49 @@
 import csv
+from pyspark.ml.fpm import FPGrowth
+from pyspark.sql.functions import col, explode
 
 
-def find_default_property(dataset, label):
-    property_list = ["name","title","label","id","uid","username","code"]
+def get_node_list(df):
+    df_ant = df.select(explode(col("`antecedent`")).alias("node"))
+    df_con = df.select(explode(col("`consequent`")).alias("node"))
 
-    with open(f'./data/datasets/{dataset}/{dataset}_node_types.csv') as csv_file:
-        csv_reader = csv.reader(csv_file, delimiter=',')
-        for row in csv_reader:
-            if row[0] == label:
-                clean_list = [item.strip() for item in row[1].replace("[", "").replace("]", "").split(",")]
-                for property in property_list:
-                    if property in clean_list: return property
+    distinct_nodes_df = df_ant.union(df_con).distinct()
+    return list([int(row.node) for row in distinct_nodes_df.collect()])
 
-                # TODO: Maybe select at random, for now just return the first property
-                return clean_list[0]
 
-        print(f"Label '{label}' is not part of the PG")
-        return None
+def find_minSupport_and_minConfidence(itemsets, node_count):
+    currMinSupport = 0.1
+    currMinConfidence = 0.5
 
-def get_node_properties(dataset):
+    for _ in range(10):
+        fp = FPGrowth(itemsCol="items", minSupport=currMinSupport, minConfidence=currMinConfidence)
+        model = fp.fit(itemsets)
+        node_list = get_node_list(model.associationRules)
 
-    node_labels = []
-    default_properties = {}
+        # check if association rules consist at least 2% of all the nodes
+        if(len(node_list) >= 0.02 * node_count): break
+
+        currMinSupport = currMinSupport / 1.5
+        # MAYBE: do not decrease confidence, or do by very little every second iteration
+        # currMinConfidence = currMinConfidence / 1.5
+
+    print(f"MIN_SUPPORT: {currMinSupport}")
+    print(f"MIN_CONFIDENCE: {currMinConfidence}")
+    return currMinSupport, currMinConfidence
+
+
+def get_properties(dataset, type):
+    properties = {}
+    property_col = 1 if type=="node" else 3
 
     # Find node labels and their default property
-    with open(f'./data/datasets/{dataset}/node_labels.csv') as csv_file:
+    with open(f'./data/datasets/{dataset}/{dataset}_{type}_types.csv') as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
-        for row in csv_reader:
-            if str(row[0]) == "label": continue
-            node_labels.append(str(row[0]))
-    
-    for x in node_labels:
-        default_properties[x] = find_default_property(dataset, label=x)
+        
+        # skip header line
+        next(csv_reader)
 
-    return node_labels, default_properties
+        for row in csv_reader:
+            properties[str(row[0])] = [item.strip() for item in row[property_col].replace("[", "").replace("]", "").split(",")]
+
+    return properties

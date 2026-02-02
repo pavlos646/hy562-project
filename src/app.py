@@ -5,7 +5,7 @@ from pathlib import Path
 from summarization import *
 from dotenv import load_dotenv
 from neo4j_utils import Neo4jManager, wait_for_neo4j
-from spark_utils import init_spark, execute_query
+from spark_utils import init_spark
 
 def visualize_subgraph(df):
 
@@ -174,7 +174,6 @@ if st.session_state.dataset_loaded:
     with personalized_tab:
         mode_options = ["Strict", "Loose", "Association"]
         selection = st.selectbox("Select summarization mode", mode_options)
-        # st.write(f"Selected mode: {selection}") #TODO: after the load set it
 
         mode = None
         match selection:

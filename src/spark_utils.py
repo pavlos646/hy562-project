@@ -14,6 +14,7 @@ def execute_query(spark, query):
         .option("query", query) \
         .load()
 
+
 def init_spark():
     # TODO: maybe get all these from a config file
 
