@@ -22,15 +22,23 @@ class SummarizationManager:
     def __init__(self, spark):
         self.spark = spark
         self.dataset = None
-        self.node_list = None        
+        self.node_list = None
+        self.node_count = None
+        self.subgraph = None
+        self.id_mappings = None
+        self.assocation_rules = None
         self.node_labels = None
         self.default_properties = None
 
     def load(self, dataset):
         self.dataset = dataset
+        self.node_count = self.__set_node_count()
         self.node_labels, self.default_properties = self.__set_node_properties()
 
     def set_node_list(self, node_list): self.node_list = node_list
+    def set_subgraph(self, subgraph): self.subgraph = subgraph
+    def set_id_mappings(self, id_mappings): self.id_mappings = id_mappings
+    def set_association_rules(self, association_rules): self.association_rules = association_rules
 
     def __find_default_property(self, label):
         property_list = ["name","title","label","id","uid","username","code"]
@@ -64,6 +72,9 @@ class SummarizationManager:
             default_properties[x] = find_default_property(self.dataset, label=x)
 
         return node_labels, default_properties
+    
+    def __set_node_count(self):
+        return execute_query(self.spark, "MATCH (n) RETURN count(n) AS node_count").collect()[0]["node_count"]
 
 
 def get_node_list(df):
@@ -126,7 +137,7 @@ def get_supporting_subgraph(sm: SummarizationManager, limit=10):
     return subgraph_df
 
 
-def get_verbalization(subgraph, association_rules, id_mapping):
+def get_verbalization(sm: SummarizationManager):
     from google import genai
 
     # TODO: Map IDs back to names/labels/titles
@@ -140,10 +151,10 @@ def get_verbalization(subgraph, association_rules, id_mapping):
     # Format Rules: Convert to a nice string (e.g., Markdown or JSON)
     rules_text = ""
     # Get top 50 rules by confidence or lift
-    rows = association_rules.sort(col("lift").desc()).limit(50).collect()
+    rows = sm.association_rules.sort(col("lift").desc()).limit(50).collect()
     for row in rows:
-        antec = [str(id_mapping[int(id)]) for id in row.antecedent]
-        conseq = [str(id_mapping[int(id)]) for id in row.consequent]
+        antec = [str(sm.id_mappings[int(id)]) for id in row.antecedent]
+        conseq = [str(sm.id_mappings[int(id)]) for id in row.consequent]
         rules_text += f"{antec} --> {conseq}, {row.confidence}, {row.lift}, {row.support}\n"
 
 
@@ -151,7 +162,7 @@ def get_verbalization(subgraph, association_rules, id_mapping):
     # Assuming subgraph has 'p' (paths) or distinct nodes/rels
     # It's safer to just describe the nodes found in the subgraph
     # (Converting a whole graph to text is heavy, so we summarize)
-    elements = subgraph.limit(50).collect()
+    elements = sm.subgraph.limit(50).collect()
     subgraph_text = str([str(row) for row in elements])
 
     print("---------------------------------------------")
@@ -198,10 +209,12 @@ def get_verbalization(subgraph, association_rules, id_mapping):
         """
     )
 
-    with open("output/verbalization.md", "a") as f:
-      f.write(f"\n\n---------------------------------\n{response.text}")
+    # with open("output/verbalization.md", "a") as f:
+    #   f.write(f"\n\n---------------------------------\n{response.text}")
 
-    print("Finished verbalization")
+    # print("Finished verbalization")
+
+    return response.text
 
 
 def find_minSupport_and_minConfidence(itemsets, node_count):
@@ -256,6 +269,8 @@ def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
             RETURN p
         """
     elif mode == Mode.ASSOCIATION:
+        association(sm)
+
         # TODO: choose whether to connect between (interested,associated nodes) and (interested, associated nodes) 
         # or just between (interested nodes) and (interested, associated nodes)
         query = f"""
@@ -273,8 +288,12 @@ def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
     df = execute_query(sm.spark, query)
     df.show(truncate=False)
 
+    sm.set_subgraph(df)
+    
+    return True
 
-def general_summarization(sm: SummarizationManager, node_count):
+
+def association(sm: SummarizationManager):
     # MAYBE: add WHERE id(s) < id(t) to avoid having both [A, B] and [B, A]
     cypher_query = """
         MATCH (s)--(t)
@@ -288,7 +307,7 @@ def general_summarization(sm: SummarizationManager, node_count):
     # Optional: Cache the DF because FPGrowth reads it multiple times
     df.cache()
     
-    minS, minC = find_minSupport_and_minConfidence(df, node_count)
+    minS, minC = find_minSupport_and_minConfidence(df, sm.node_count)
     fp = FPGrowth(itemsCol="items", minSupport=minS, minConfidence=minC)
     model = fp.fit(df)
 
@@ -297,12 +316,20 @@ def general_summarization(sm: SummarizationManager, node_count):
     model.associationRules.show(truncate=False)
 
     node_list = get_node_list(model.associationRules)
-    subgraph = get_supporting_subgraph(node_list)
-    id_mappings = property_id_to_name(node_list)
-    print(id_mappings)
+    sm.set_node_list(node_list)
+    sm.set_association_rules(model.associationRules)
 
-    return node_list, id_mappings, subgraph
 
+def general_summarization(sm: SummarizationManager):
+    association(sm)
+
+    subgraph = get_supporting_subgraph(sm)
+    id_mappings = property_id_to_name(sm)
+
+    sm.set_subgraph(subgraph)
+    sm.set_id_mappings(id_mappings)
+
+    return True
 
 # def init():
 #     node_labels, default_properties = get_node_properties(DATASET)

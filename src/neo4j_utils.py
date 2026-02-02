@@ -1,7 +1,14 @@
 import os
-import time
 import subprocess
+from time import sleep
 from pathlib import Path
+from neo4j import GraphDatabase
+
+URI = "bolt://[0:0:0:0:0:0:0:0]:7687"
+AUTH = ("neo4j", "password")
+MAX_RETRIES = 5
+RETRY_DELAY = 5  # seconds
+
 
 def find_dump_path(dataset_folder_path):
     # Convert string path to a Path object
@@ -20,6 +27,20 @@ def find_dump_path(dataset_folder_path):
     
     # Return the absolute path as a string
     return str(dump_files[-1].absolute())
+
+def wait_for_neo4j():
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            with GraphDatabase.driver(URI, auth=AUTH) as driver:
+                driver.verify_connectivity()
+                print("✅ Neo4j is online and ready!")
+                return True
+        except Exception as e:
+            print(f"⚠️ Attempt {attempt}/{MAX_RETRIES}: Neo4j not ready yet. Retrying in {RETRY_DELAY}s...")
+            sleep(RETRY_DELAY)
+    
+    print("❌ Critical Error: Could not connect to Neo4j after multiple attempts.")
+    return False
 
 
 class Neo4jManager:
@@ -50,8 +71,6 @@ class Neo4jManager:
     def start(self):
         print("🚀 Starting Neo4j...")
         subprocess.run([self.bin, "start"], check=True)
-        # Give it a few seconds to warm up the JVM
-        time.sleep(5)
 
     def stop(self):
         print("🛑 Stopping Neo4j...")
