@@ -15,7 +15,6 @@ def visualize_subgraph(sm: SummarizationManager):
         return
 
     try:
-        # Limit data to prevent browser lag
         rows = sm.subgraph.collect()
     except Exception as e:
         st.error(f"Error collecting graph data: {e}")
@@ -31,11 +30,11 @@ def visualize_subgraph(sm: SummarizationManager):
         if not path_nodes or not rels:
             continue
 
-        # Create Node objects (using name as ID if unique IDs aren't in the path)
+        # Create Node objects
         for node_string in path_nodes:
             if node_string not in viz_nodes:
-                node_type = str(node_string.split(':')[0])
-                node_name = str(node_string.split(':')[1])
+                # e.g. Character:Anakin Skywalker
+                node_type, node_name = node_string.split(':')
 
                 viz_nodes[node_string] = Node(
                     id=node_name,
@@ -192,16 +191,18 @@ if st.session_state.dataset_loaded:
             submitted = st.form_submit_button("Select")
 
             if submitted:
+                prop_name = personalized_sm.default_properties[node_selection]
                 query = f"""
                     MATCH (n:{node_selection})
-                    WHERE n.{personalized_sm.default_properties[node_selection]}='{user_text}'
-                    RETURN COUNT(n) AS node_count
+                    WHERE toLower(n.{prop_name})=toLower('{user_text}')
+                    RETURN COUNT(n) AS node_count, collect(n.{prop_name})[0] AS actual_name
                 """
-                tmp_res = int(execute_query(personalized_sm.spark, query).collect()[0]["node_count"])
-                if tmp_res >= 1:
+                tmp_res = execute_query(personalized_sm.spark, query).collect()[0]
+                if int(tmp_res["node_count"]) >= 1:
                     st.toast("Selection Saved!", icon='✅')
                     # MAYBE: have as option to save in .json file :)
-                    st.session_state.user_interests.setdefault(node_selection, []).append(user_text)
+                    db_name = tmp_res["actual_name"]
+                    st.session_state.user_interests.setdefault(node_selection, []).append(db_name)
                 else:
                     st.toast(f"{node_selection} not found!", icon='❌')
 
@@ -240,6 +241,23 @@ if st.session_state.dataset_loaded:
                     summary = get_verbalization(personalized_sm)
                     st.write("### Summary")
                     st.markdown(summary, text_alignment="justify")
+
+    with st.sidebar:
+        st.header("🎯 Current Interests")
+        if not st.session_state.user_interests:
+            st.info("No interests selected yet.")
+        else:
+            for label, names in st.session_state.user_interests.items():
+                st.subheader(f"{label}")
+                for name in names:
+                    # Use a small 'caption' or bullet points
+                    st.write(f"- {name}")
+                st.markdown("---")
+            
+            if st.button("Clear All"):
+                st.session_state.user_interests = {}
+                st.rerun()
+            
 
 # Cleanup at exit
 def cleanup():

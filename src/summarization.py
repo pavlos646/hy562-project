@@ -1,4 +1,3 @@
-import json
 from enum import Enum
 from db_utils import *
 from spark_utils import *
@@ -89,37 +88,20 @@ def property_id_to_name(sm: SummarizationManager, node_list):
 
 
 def get_supporting_subgraph(sm: SummarizationManager, limit=10):
-    # 2. BUILD THE DYNAMIC CYPHER STRING
-    # We build a CASE statement: CASE WHEN 'Character' IN labels(node) THEN node.name ...
-    case_parts = []
-    for label, prop in sm.default_properties.items():
-        # We use coalesce here just in case the expected property is missing on a specific node
-        case_parts.append(f"WHEN '{label}' IN labels(node) THEN coalesce(node.{prop}, 'Unknown')")
-    
-    # Build the ELSE clause (The Fallback)
-    # This creates: coalesce(node.name, node.title, node.label, ..., "Unknown")
-    fallback_props = [f"node.{p}" for p in sm.node_labels]
-    else_part = f"ELSE coalesce({', '.join(fallback_props)}, toString(id(node)))" # Final fallback to internal ID
-    
-    # Combine into one string
-    node_display_logic = f"CASE {' '.join(case_parts)} {else_part} END"
-
     # MAYBE: use allShortestPaths
-    # 3. INSERT INTO QUERY
-    cypher_query = f"""
+    pre_query = f"""
         MATCH p = (n)-[*1..2]-(m)
         WHERE id(n) IN {sm.to_node_list()}
             AND id(m) IN {sm.to_node_list()}
         RETURN
-            [node IN nodes(p) | head(labels(node)) + ':' + {node_display_logic}] as path_nodes,
-            [rel IN relationships(p) | type(rel)] as relationships
     """
-    subgraph_df = execute_query(sm.spark, cypher_query)
+    query = pre_query + return_statement(sm.node_labels, sm.default_properties)
+    subgraph_df = execute_query(sm.spark, query)
     subgraph_df.show(truncate=False)
 
     # TODO: output the subgraph in a way maybe that neo4j understands it so we can do queries in the subgraph for personalization
 
-    return subgraph_df, f"MATCH p = (n)-[*1..2]-(m)\nWHERE id(n) IN {sm.to_node_list()}\nAND id(m) IN {sm.to_node_list()}\nRETURN p"
+    return subgraph_df, pre_query+" p"
 
 
 def get_verbalization(sm: SummarizationManager):
@@ -145,7 +127,8 @@ def get_verbalization(sm: SummarizationManager):
     subgraph_text = str([str(row) for row in elements])
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        # model="gemini-2.5-flash-lite",
+        model="gemini-3-pro-preview",
         contents=f"""
             You are an AI system tasked with verbalizing data mining results.
             You are given:
@@ -192,48 +175,18 @@ def get_verbalization(sm: SummarizationManager):
     return response.text
 
 
-def load_user_interests():
-    data = {}
-    with open('./data/user.json', 'r') as file:
-        data = json.load(file)
-    return data
-
-
-# node_list is only used for Mode.ASSOCIATION
 def filter_graph_based_on_user(sm: SummarizationManager, interests, mode:Mode=Mode.LOOSE):
-    case_parts = []
-    for label, prop in sm.default_properties.items():
-        # We use coalesce here just in case the expected property is missing on a specific node
-        case_parts.append(f"WHEN '{label}' IN labels(node) THEN coalesce(node.{prop}, 'Unknown')")
-    
-    # Build the ELSE clause (The Fallback)
-    # This creates: coalesce(node.name, node.title, node.label, ..., "Unknown")
-    fallback_props = [f"node.{p}" for p in sm.node_labels]
-    else_part = f"ELSE coalesce({', '.join(fallback_props)}, toString(id(node)))" # Final fallback to internal ID
-    
-    # Combine into one string
-    node_display_logic = f"CASE {' '.join(case_parts)} {else_part} END"
-
-    query = ""
+    pre_query = ""
     conditions = []
     for label, names in interests.items():
-        # Determine if we should look for 'name' or 'title' 
-        # (You can use your default_properties dict here)
-        prop = sm.default_properties[label]
-        
-        # Format the list for Cypher: ["A", "B"]
-        formatted_names = str(names)
-        conditions.append(f"(n:{label} AND n.{prop} IN {formatted_names})")
+        prop = sm.default_properties[label]        
+        formatted_names = [name.lower() for name in names]
+        conditions.append(f"(n:{label} AND toLower(n.{prop}) IN {formatted_names})")
 
     where_clause = "\nOR ".join(conditions)
 
-    return_statement = f"""
-    [node IN nodes(p) | head(labels(node)) + ':' + {node_display_logic}] as path_nodes,
-    [rel IN relationships(p) | type(rel)] as relationships
-    """
-
     if mode in [Mode.STRICT, Mode.LOOSE]:
-        query = f"""
+        pre_query = f"""
             MATCH p = (n)-[*..{mode.value}]-()
             WHERE {where_clause}
             RETURN
@@ -241,26 +194,28 @@ def filter_graph_based_on_user(sm: SummarizationManager, interests, mode:Mode=Mo
     elif mode == Mode.ASSOCIATION:
         association(sm)
 
+        m_where_clause = where_clause.replace('n:', 'm:').replace('toLower(n.', 'toLower(m.')
+
         # TODO: choose whether to connect between (interested,associated nodes) and (interested, associated nodes) 
         # or just between (interested nodes) and (interested, associated nodes)
-        query = f"""
+        pre_query = f"""
             MATCH (n)
             WHERE {where_clause}
             OR id(n) IN {sm.to_node_list()}
             WITH n
             MATCH p = (n)-[*..2]-(m)
-            WHERE {where_clause.replace('n:', 'm:').replace('n.', 'm.')}
+            WHERE {m_where_clause}
             OR id(m) IN {sm.to_node_list()}
             RETURN
         """
 
-    print(query + return_statement)
-    df = execute_query(sm.spark, query + return_statement)
+    query = pre_query + return_statement(sm.node_labels, sm.default_properties)    
+    df = execute_query(sm.spark, query)
     df.show(truncate=False)
 
     sm.set_subgraph(df)
     
-    return query + " p"
+    return pre_query+" p"
 
 
 def association(sm: SummarizationManager):

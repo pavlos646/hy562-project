@@ -3,6 +3,24 @@ from pyspark.ml.fpm import FPGrowth
 from pyspark.sql.functions import col, explode
 
 
+def return_statement(node_labels, default_properties):
+    case_parts = []
+    for label, prop in default_properties.items():
+        case_parts.append(f"WHEN '{label}' IN labels(node) THEN coalesce(node.{prop}, 'Unknown')")
+    
+    fallback_props = [f"node.{p}" for p in node_labels]
+    else_part = f"ELSE coalesce({', '.join(fallback_props)}, toString(id(node)))" # Final fallback to internal ID
+    
+    node_display_logic = f"CASE {' '.join(case_parts)} {else_part} END"
+
+    statement = f"""
+        [node IN nodes(p) | head(labels(node)) + ':' + {node_display_logic}] as path_nodes,
+        [rel IN relationships(p) | type(rel)] as relationships
+    """
+
+    return statement
+
+
 def get_node_list(df):
     df_ant = df.select(explode(col("`antecedent`")).alias("node"))
     df_con = df.select(explode(col("`consequent`")).alias("node"))
