@@ -1,89 +1,77 @@
 import atexit
 import streamlit as st
-from streamlit_agraph import Edge, Node, Config, agraph
+# from streamlit_agraph import Edge, Node, Config, agraph
 from pathlib import Path
 from summarization import *
 from dotenv import load_dotenv
-from neo4j_viz import VisualizationGraph
+from neo4j_viz import Node, Relationship, VisualizationGraph
 from neo4j_utils import Neo4jManager, wait_for_neo4j
 from spark_utils import init_spark, execute_query
+import streamlit.components.v1 as components
 
-def visualize_subgraph(df):
 
+def visualize_subgraph2(df):
     if df is None:
         st.warning("No graph data to visualize.")
         return
 
-    # Collect data from Spark to Python
-    # (Limit to avoid browser crash if graph is huge)
     try:
-        rows = df.limit(100).collect()
+        # Limit data to prevent browser lag
+        rows = df.collect()
     except Exception as e:
         st.error(f"Error collecting graph data: {e}")
         return
 
-    unique_nodes = set()
-    edges = []
-    
-    # 2. Iterate through each path
+    viz_nodes = {}
+    viz_relationships = []
+
     for row in rows:
-        path_nodes = row['path_nodes']      # e.g. [Movie, Actor, Movie]
-        rels = row['relationships']         # e.g. [APPEARED_IN, APPEARED_IN]
+        path_nodes = row['path_nodes']  # list of display names
+       
+        rels = row['relationships']    # list of relationship types
         
-        # Check if we have valid data
         if not path_nodes or not rels:
             continue
 
-        # 3. Construct Edges (Node[i] -- Rel[i] --> Node[i+1])
+        # Create Node objects (using name as ID if unique IDs aren't in the path)
+        for node_name in path_nodes:
+            if node_name not in viz_nodes:
+                viz_nodes[node_name] = Node(
+                    id=node_name, 
+                    caption=node_name, 
+                    size=15
+                )
+
+        # Create Relationship objects
         for i in range(len(rels)):
-            source = str(path_nodes[i])
-            target = str(path_nodes[i+1])
-            label = str(rels[i])
-            
-            # Add to Node Set (to ensure uniqueness)
-            unique_nodes.add(source)
-            unique_nodes.add(target)
-            
-            # Create Edge Object
-            # Using specific IDs helps prevent duplicate edges if needed, 
-            # but here we just append.
-            edges.append(Edge(
-                source=source,
-                target=target,
-                label=label,	#???
-                color="#888888",
-                type="CURVE_SMOOTH" 
+            viz_relationships.append(Relationship(
+                source=path_nodes[i],
+                target=path_nodes[i+1]
             ))
 
-    # 4. Create Node Objects
-    nodes = []
-    for n in unique_nodes:
-        nodes.append(Node(
-            id=n,
-            label=n,  #???
-            size=20,
-            shape="dot",
-            color="#FF4B4B" # Streamlit Red
-        ))
-
-    # 5. Configure & Render ????
-    config = Config(
-        width="100%",
-        height=800,
-        directed=True, 
-        physics=True, 
-        hierarchical=False,
-        nodeHighlightBehavior=True,
-        nodeSpacing=200,   
-        sortMethod="hubsize",
-        gravity=-5000,      
-        springLength=200,  
-        springConstant=0.05, 
-        highlightColor="#F7A7A6"
+    # Initialize the visualization
+    vg = VisualizationGraph(
+        nodes=list(viz_nodes.values()), 
+        relationships=viz_relationships
     )
+    
+    # Optional: Color nodes by their caption (label)
+    vg.color_nodes(field="caption")
 
-    return agraph(nodes=nodes, edges=edges, config=config)
+    # Render to HTML and display in Streamlit
+    # html_content = vg.render(width="100%", height="600px")
+    # components.html(html_content, height=650)
 
+    try:
+        # Explicitly cast to string to satisfy Streamlit's srcdoc requirement
+        html_content = vg.render(renderer="webgl", width="100%", height="600px")
+        
+        if html_content:
+            components.html(html_content.data, height=650, scrolling=True)
+        else:
+            st.error("Visualization failed to generate HTML.")
+    except Exception as e:
+        st.error(f"Visualization rendering error: {e}")
 
 @st.cache_resource
 def initialize_app():
@@ -159,14 +147,20 @@ if st.session_state.dataset_loaded:
     with general_tab:
         if st.button("Generate Summary", key="general"):
             with st.spinner("Loading..."):
-                general_summarization(summary_manager)
+                cypher_query = general_summarization(summary_manager)
+                st.session_state.general_cypher_query = cypher_query
                 st.session_state.general_summary_ready = True
 
 
         if st.session_state.general_summary_ready:
             st.write("### Subgraph")
-            st.write(summary_manager.subgraph)         
-            visualize_subgraph(summary_manager.subgraph)
+            st.write("**Cypher Query**")
+            st.code(st.session_state.general_cypher_query, language="cypher")
+            st.write("**Description**")
+            st.write(summary_manager.subgraph)
+            
+            
+            visualize_subgraph2(summary_manager.subgraph)
 
             if st.button("Verbalize Summary"):
                 with st.spinner("Loading..."):
@@ -234,8 +228,18 @@ if st.session_state.dataset_loaded:
             st.code(st.session_state.personalized_cypher_query, language="cypher")
             st.write("**Description**")
             st.write(summary_manager.subgraph)
-            st.write("**Visualization**")
-            st.write("TODO")
+            # TODO: 
+            # st.write("**Visualization**")
+            # st.write("TODO")
+
+            if st.button("Verbalize Summary", key="personalized-verbalize"):
+                with st.spinner("Loading..."):
+                    # we already have subgraph set, we need id_mappings, association_rules
+                    association(summary_manager)
+                    summary = get_verbalization(summary_manager)
+                    st.write("### Summary")
+                    st.markdown(summary, text_alignment="justify")
+
             # vg = VisualizationGraph(nodes, relationships)
             # vg.render()
             # visualize_subgraph(summary_manager.subgraph)

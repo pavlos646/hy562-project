@@ -119,7 +119,7 @@ def get_supporting_subgraph(sm: SummarizationManager, limit=10):
 
     # TODO: output the subgraph in a way maybe that neo4j understands it so we can do queries in the subgraph for personalization
 
-    return subgraph_df
+    return subgraph_df, f"MATCH p = (n)-[*1..2]-(m) WHERE id(n) IN {sm.to_node_list()} AND id(m) IN {sm.to_node_list()} RETURN p"
 
 
 def get_verbalization(sm: SummarizationManager):
@@ -249,6 +249,7 @@ def filter_graph_based_on_user(sm: SummarizationManager, interests, mode:Mode=Mo
 
 def association(sm: SummarizationManager):
     # MAYBE: add WHERE id(s) < id(t) to avoid having both [A, B] and [B, A]
+    # Create buckets for FPGrowth
     cypher_query = """
         MATCH (s)--(t)
         WITH s, collect(DISTINCT toString(id(t))) AS neighbors
@@ -274,7 +275,7 @@ def association(sm: SummarizationManager):
     sm.set_id_mappings(id_mappings)
 
 
-    # Assuming sm.node_list is your list of IDs
+    # 
     cypher_query = f"""
         MATCH (n)
         WHERE id(n) IN {node_list}
@@ -308,7 +309,7 @@ def association(sm: SummarizationManager):
 def general_summarization(sm: SummarizationManager):
     association(sm)
 
-    subgraph = get_supporting_subgraph(sm)
+    subgraph, query = get_supporting_subgraph(sm)
     sm.set_subgraph(subgraph)
 
-    return True
+    return query
