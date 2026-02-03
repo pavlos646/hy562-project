@@ -4,8 +4,9 @@ from streamlit_agraph import Edge, Node, Config, agraph
 from pathlib import Path
 from summarization import *
 from dotenv import load_dotenv
+from neo4j_viz import VisualizationGraph
 from neo4j_utils import Neo4jManager, wait_for_neo4j
-from spark_utils import init_spark
+from spark_utils import init_spark, execute_query
 
 def visualize_subgraph(df):
 
@@ -99,18 +100,18 @@ def initialize_app():
 # -----------------------------
 st.set_page_config(
     page_title="Semantic PG Summarization",
-    page_icon="🧠",
+    page_icon="📝",
     layout="centered"
 )
 
 # -----------------------------
 # Header
 # -----------------------------
-st.title("🧠 Semantic PG Summarization")
+st.title("📝 Semantic PG Summarization")
 st.markdown(
     """
-    Επιλέξτε **dataset** και **τρόπο εξατομίκευσης** για να παραχθεί
-    μια συνοπτική, ερμηνευτική περιγραφή βασισμένη στα δεδομένα.
+    Select a **dataset** and **personalization mode** to generate 
+    a concise, interpretive summary based on the graph data.
     """
 )
 
@@ -124,11 +125,16 @@ if "general_summary_ready" not in st.session_state:
     st.session_state.general_summary_ready = False
 if "personalized_summary_ready" not in st.session_state:
     st.session_state.personalized_summary_ready = False
+if "personalized_cypher_query" not in st.session_state:
+    st.session_state.personalized_cypher_query = False
+if "user_interests" not in st.session_state:
+    st.session_state.user_interests = {}
 
 # Select Dataset
 dataset_path = Path('./data/datasets')
 dataset_options = [f.name for f in dataset_path.iterdir() if f.is_dir()]
-dataset_selection = st.selectbox("Select dataset", dataset_options)
+default_index = dataset_options.index("star-wars")
+dataset_selection = st.selectbox("Select dataset", dataset_options, index=default_index)
 
 
 if st.button("Select"):
@@ -159,7 +165,7 @@ if st.session_state.dataset_loaded:
 
         if st.session_state.general_summary_ready:
             st.write("### Subgraph")
-            st.write(summary_manager.subgraph)
+            st.write(summary_manager.subgraph)         
             visualize_subgraph(summary_manager.subgraph)
 
             if st.button("Verbalize Summary"):
@@ -175,6 +181,38 @@ if st.session_state.dataset_loaded:
         mode_options = ["Strict", "Loose", "Association"]
         selection = st.selectbox("Select summarization mode", mode_options)
 
+
+        with st.form("interests_form", clear_on_submit=True):
+
+            st.write("#### Select interests")
+
+            col_left, col_right = st.columns([1, 2])
+            with col_left:
+                node_options = get_properties(summary_manager.dataset, "node")
+                node_selection = st.selectbox("Node Type", node_options)
+            with col_right:
+                user_text = st.text_area("Node Name", placeholder="Enter entity name here...")
+
+            submitted = st.form_submit_button("Select")
+
+            if submitted:
+                query = f"""
+                    MATCH (n:{node_selection})
+                    WHERE n.{summary_manager.default_properties[node_selection]}='{user_text}'
+                    RETURN COUNT(n) AS node_count
+                """
+                tmp_res = int(execute_query(summary_manager.spark, query).collect()[0]["node_count"])
+                if tmp_res >= 1:
+                    st.toast("Selection Saved!", icon='✅')
+                    # MAYBE: have as option to save in .json file :)
+                    st.session_state.user_interests.setdefault(node_selection, []).append(user_text)
+                else:
+                    st.toast(f"{node_selection} not found!", icon='❌')
+
+            st.write("**Interests**")
+            st.write(st.session_state.user_interests)
+
+
         mode = None
         match selection:
             case "Strict": mode = Mode.STRICT
@@ -184,12 +222,22 @@ if st.session_state.dataset_loaded:
 
         if st.button("Generate Summary", key="personalized"):
             with st.spinner("Loading..."):
-                filter_graph_based_on_user(summary_manager, mode)
+                print("USER INTERESTS: ")
+                print(st.session_state.user_interests)
+                cypher_query = filter_graph_based_on_user(summary_manager, st.session_state.user_interests, mode)
+                st.session_state.personalized_cypher_query = cypher_query
                 st.session_state.personalized_summary_ready = True
 
         if st.session_state.personalized_summary_ready:
             st.write("### Subgraph")
+            st.write("**Cypher Query**")
+            st.code(st.session_state.personalized_cypher_query, language="cypher")
+            st.write("**Description**")
             st.write(summary_manager.subgraph)
+            st.write("**Visualization**")
+            st.write("TODO")
+            # vg = VisualizationGraph(nodes, relationships)
+            # vg.render()
             # visualize_subgraph(summary_manager.subgraph)
 
 

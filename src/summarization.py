@@ -200,8 +200,8 @@ def load_user_interests():
 
 
 # node_list is only used for Mode.ASSOCIATION
-def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
-    interests = load_user_interests()
+def filter_graph_based_on_user(sm: SummarizationManager, interests, mode:Mode=Mode.LOOSE):
+    # interests = load_user_interests()
 
     query = ""
     conditions = []
@@ -244,7 +244,7 @@ def filter_graph_based_on_user(sm: SummarizationManager, mode:Mode=Mode.LOOSE):
 
     sm.set_subgraph(df)
     
-    return True
+    return query
 
 
 def association(sm: SummarizationManager):
